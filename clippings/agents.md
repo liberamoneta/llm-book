@@ -1,6 +1,3 @@
-Ecco il file `BOOK_AGENTS.md` completo, coerente con il tuo `book.py` e ispirato allo stile del tuo `AGENTS.md` originale:
-
-```markdown
 # BOOK_AGENTS.md – Costituzione della LLM Book (Karpathy pattern)
 
 ## Il tuo ruolo
@@ -22,6 +19,7 @@ llm-book/
 │   ├── log.md          # Tracciato cronologico (append-only)
 │   ├── file_hashes.json # Database hash per evitare rielaborazioni
 │   └── style_feedback.json # Database apprendimento stile (opzionale)
+├── articles/           # Articoli/blog post generati
 └── BOOK_AGENTS.md      # Questo file – le regole del gioco
 ```
 
@@ -140,49 +138,90 @@ L'`update` **mantiene la lingua originale della pagina esistente**, indipendente
 
 ---
 
+## 🎯 Modalità Interattiva (`--interactive` o `-i`)
+
+Quando esegui `ingest <file> --interactive`, il sistema ti pone **14 domande** per arricchire i metadati:
+
+| # | Domanda | Campo nel frontmatter | Obbligatorio |
+|---|---------|----------------------|--------------|
+| 1 | Di che tipo di opera si tratta? | `type` | No (default rilevato) |
+| 2 | Qual è il titolo? | `title` | No (default dal file) |
+| 3 | Chi è l'autore? | `author` | No (default rilevato) |
+| 4 | In che lingua è scritta? | `language` | No (default rilevato) |
+| 5 | Hai letto quest'opera? | `read_status` | Sì |
+| 6 | Da 1 a 5 stelle, che voto le dai? | `rating` | No |
+| 7 | Quali entities personali vuoi associare? | `entities` | No |
+| 8 | Quali tags personali vuoi associare? | `tags` | No |
+| 9 | Vuoi creare link manuali? | (nel corpo) | No |
+| 10 | A quale genere letterario appartiene? | `genre` | No |
+| 11 | Vuoi aggiungere una nota generale? | `personal_notes` | No |
+| 12 | Cosa ti ha colpito di più? | `highlights` | No |
+| 13 | Vuoi aggiungere citazioni manualmente? | (aggiunte a `>>`) | No |
+| 14 | Vuoi generare un articolo/blog post? | `publish_format` | No |
+
+### Esempio di utilizzo
+
+```bash
+📚 > ingest Невский_Проспект.md --interactive
+# o con scorciatoia
+📚 > ingest Невский_Проспект.md -i
+```
+
+---
+
 ## Regole per Link, Entities e Tags
 
-### Link interni
+### Differenze chiave
 
-- **Formato**: `[[Nome_Con_Underscore]]`
-- **Massimo**: 8-10 link per riassunto
-- **Solo pagine realmente correlate** (personaggi, autori, temi)
-- **Link vuoti**: `[[]]` sono segnalibri per approfondimenti futuri (NON sono errori)
+| Elemento | Scopo | Formato | Esempio |
+|----------|-------|---------|---------|
+| **Entities** | Nomi propri (personaggi, luoghi, autori) | `["Nome1", "Nome2"]` | `["Piskarev", "Pirogov", "Gogol_Nikolaj"]` |
+| **Tags** | Categorie, generi, stati, keywords | `["tag1", "tag2"]` | `["short_story", "russian", "classic"]` |
+| **Links** | Collegamenti ipertestuali interni | `[[Pagina_Collegata]]` | `[[Gogol_Nikolaj]]` |
 
-### Entities (nel frontmatter)
+### Gerarchia e relazioni
 
-- **Cosa sono**: Solo nomi propri (personaggi, autori, luoghi, opere correlate)
-- **Formato**: `entities: ["Nome1", "Nome2"]`
-- **Niente spazi** (usa `_` o `-`)
-- **Niente descrizioni**
-- **Massimo**: 8 entities
-- **Lingua**: in inglese per standardizzazione (es. `Gogol_Nikolaj`, `Hlestakov`)
+```
+Entities (nomi propri)
+    ↓ possono diventare
+Links (se esiste una pagina dedicata)
+    ↓ vengono aggregati in
+Tags (categorie generali)
+```
 
-### Tags (nel frontmatter)
+### Regole per l'inserimento
 
-- **Lingua**: inglese, lowercase
-- **Massimo**: 5-6 tags
-- **Categorie**: tipo opera, lingua, stato
+| Tipo | Regole | Esempio corretto | Esempio errato |
+|------|--------|------------------|----------------|
+| **Entities** | Nomi propri, senza spazi (usa `_`), in inglese o traslitterato | `Piskarev`, `Gogol_Nikolaj` | `il protagonista`, `Nikolaj Gogol` |
+| **Tags** | lowercase, senza spazi, in inglese | `short_story`, `classic`, `russian` | `Racconto`, `classico russo` |
+| **Links** | `[[Nome_Pagina]]` con underscore | `[[Gogol_Nikolaj]]` | `[[Nikolaj Gogol]]` |
 
 ---
 
 ## Frontmatter standard
 
-### Per opera (teatro/romanzo/poesia/racconto/saggio)
+### Per opera (teatro/romanzo/poesia/racconto/saggio) con metadati personali
 
 ```yaml
 ---
-title: "Titolo dell'opera"
-type: theater | novel | poetry | short_story | essay
-language: it | ru | en
-author: "Nome_Autore"
-source: [file_raw.md]
-created: YYYY-MM-DD
-updated: YYYY-MM-DD
-word_count: 1500
-tags: ["theater", "russian", "riassunto"]
-entities: ["Gogol", "Hlestakov", "Gorodnichij"]
-status: "completato" | "aggiornato"
+title: "Невский проспект"
+type: short_story
+language: ru
+author: "Николай Васильевич Гоголь"
+source: [Невский_Проспект.md]
+created: 2026-06-02
+updated: 2026-06-02
+word_count: 1850
+tags: ["short_story", "russian", "riassunto", "classic", "read_2026"]
+entities: ["Piskarev", "Pirogov", "Schiller", "Gogol_Nikolaj", "Pietroburgo"]
+status: "completato"
+read_status: "completed"
+rating: 5
+genre: "realismo fantastico"
+personal_notes: "Gogol anticipa il surrealismo urbano"
+highlights: "Il contrasto tra Piskarev (sognatore) e Pirogov (materialista)"
+publish_format: "markdown"
 ---
 ```
 
@@ -235,6 +274,8 @@ status: "tradotto"
 |---------|-------------|
 | `ingest <file>` | Crea riassunto – **mantiene la lingua originale** |
 | `ingest <file> --force` | Forza la rielaborazione (ignora hash) |
+| `ingest <file> -i` | Modalità interattiva (14 domande) |
+| `ingest <file> --interactive` | Modalità interattiva |
 | `update <file>` | Aggiorna opera esistente – **mantiene la lingua** |
 | `update <file> --force` | Forza l'update (ignora hash) |
 | `extract <file>` | Versione essenziale (solo punti chiave) |
@@ -264,6 +305,18 @@ status: "tradotto"
 | `reset-hashes` | Resetta il database hash |
 | `help` | Mostra l'help completo |
 | `exit` | Esce dal programma |
+
+---
+
+## Limiti di caratteri
+
+| Costante | Valore | Utilizzo |
+|----------|-------|----------|
+| `MAX_CHARS_PROSE` | 60000 | Teatro, romanzi, racconti, saggi |
+| `MAX_CHARS_POETRY` | 8000 | Poesia |
+| `MAX_CHARS_UPDATE` | 20000 | Merge in update_existing |
+| `MAX_CHARS_ANALYSIS` | 8000 | Query, quote, compare, timeline, character, theme, scene |
+| `MAX_CHARS_TRANSLATE` | 10000 | Traduzioni |
 
 ---
 
@@ -311,6 +364,12 @@ Dettagli: Aggiornata [[revisor_theater]] con Revisor_Atto2.md
 ## TRANSLATE @ 2026-05-31 16:45:00
 Fonte: revisor_theater
 Dettagli: Tradotta [[revisor_theater]] in italiano
+---
+
+## INGEST (interactive) @ 2026-06-02 10:00:00
+Fonte: Невский_Проспект.md
+Dettagli: Creato riassunto con modalità interattiva (14 domande)
+---
 ```
 
 ---
@@ -335,6 +394,23 @@ Dettagli: Tradotta [[revisor_theater]] in italiano
    ✅ Riassunto creato: book/pages/revisor_theater.md
    📊 Parole: 1850
    💬 Citazioni evidenziate: 3
+```
+
+**Ingest interattivo:**
+```
+📚 INGEST: Невский_Проспект.md
+   📌 Estratte 3 citazioni evidenziate (>>)
+   🎭 Tipo: short_story
+   🌐 Lingua: ru
+   ✍️ Autore: Николай Васильевич Гоголь
+   📏 Lunghezza: 35000 caratteri
+   ✅ Riassunto creato: book/pages/Невский_проспект_short_story.md
+   📊 Parole: 1850
+   🏷️ Tags: 6
+   🔗 Entities: 4
+   💬 Citazioni evidenziate: 5
+   📝 Note personali: 48 caratteri
+   📄 Articolo generato: articles/2026-06-02_Невский_проспект.md
 ```
 
 **Skip per hash invariato:**
