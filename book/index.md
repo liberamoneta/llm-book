@@ -1,6 +1,6 @@
 # 📚 Indice del Book
 
-Ultimo aggiornamento: 2026-06-03 23:04:55
+Ultimo aggiornamento: 2026-06-05 11:02:24
 
 ## Statistiche
 - Opere totali: 1
@@ -9,5 +9,5 @@ Ultimo aggiornamento: 2026-06-03 23:04:55
 ## Opere per tipo
 
 
-### 📖 Racconti (рассказ / повесть)
-- [[Невский_Проспект_racconto]] – Невский_Проспект (Н_Гоголь) [ru]
+### 📗 Novelle (повесть) - 30.000-150.000 car.
+- [[Невский_Проспект_novella]] – Невский_Проспект (Н_Гоголь) [ru]

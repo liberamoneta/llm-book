@@ -5,20 +5,20 @@ Basato su BOOK_AGENTS.md
 
 Classificazione russa:
 - рассказ (< 30.000) → racconto (5.000-8.000 caratteri)
-- повесть (30.000-150.000) → racconto (5.000-8.000 caratteri)
-- роман (150.000-800.000) → romanzo (capitolo: 3.000-5.000, finale: 10.000-15.000)
-- роман-эпопея (> 800.000) → romanzo_epico (capitolo: 3.000-5.000, finale: 15.000-20.000)
+- повесть (30.000-150.000) → novella (8.000-12.000 caratteri)
+- роман (150.000-800.000) → romanzo (capitolo: 8.000-12.000, finale: 10.000-15.000)
+- роман-эпопея (> 800.000) → romanzo_epico (capitolo: 8.000-12.000, finale: 15.000-20.000)
 
 Marker citazioni: >> ... << (supporto multi-riga)
 
 Comandi:
-  ingest, update, extract, query, deep, quote, compare, timeline,
-  character, theme, translate, article, publish, complete, lint,
-  status, list, list-raw, list-books, move, reset-hashes, help, exit
+  ingest, update, query, web, web-ru, web-only, post, quote, compare, 
+  timeline, character, theme, translate, article, publish, complete, 
+  lint, status, list, list-raw, list-books, move, reset-hashes, help, exit
 
 Opzioni ingest:
   --force, -f           Forza la rielaborazione
-  --interactive, -i     Modalità interattiva (14 domande)
+  --interactive, -i     Modalità interattiva (10 domande)
   --capitolo N          Numero del capitolo (per romanzi)
   --opera "Titolo"      Titolo dell'opera (per collegare capitoli)
   --autore "Nome"       Autore dell'opera (per collegare capitoli)
@@ -29,9 +29,19 @@ import re
 import json
 import shutil
 import hashlib
+import time
 from pathlib import Path
 from datetime import datetime
 from openai import OpenAI
+
+# ==================== RICERCA WEB ====================
+try:
+    import requests
+    from bs4 import BeautifulSoup
+    REQUESTS_AVAILABLE = True
+except ImportError:
+    REQUESTS_AVAILABLE = False
+    print("⚠️ requests/beautifulsoup4 non disponibili. Installa: pip install requests beautifulsoup4")
 
 # ==================== AUTOCOMPLETAMENTO ====================
 
@@ -48,9 +58,10 @@ except ImportError:
 
 COMMANDS = [
     'list', 'list-raw', 'list-books', 'move', 'ingest', 'update',
-    'extract', 'query', 'deep', 'quote', 'compare', 'timeline',
-    'character', 'theme', 'translate', 'article', 'publish', 'complete',
-    'lint', 'status', 'list-processed', 'reset-hashes', 'help', 'exit'
+    'query', 'web', 'web-ru', 'web-only', 'post', 'quote', 'compare',
+    'timeline', 'character', 'theme', 'translate', 'article', 'publish',
+    'complete', 'lint', 'status', 'list-processed', 'reset-hashes',
+    'help', 'exit'
 ]
 
 # ==================== CONFIGURAZIONE ====================
@@ -78,6 +89,24 @@ ARTICLES = Path("articles")
 
 for d in [CLIPPINGS, RAW, RAW_ASSETS, BOOK, BOOK_PAGES, ARTICLES]:
     d.mkdir(exist_ok=True)
+
+# ==================== DOMINI RUSSI PER RICERCA ====================
+
+RUSSIAN_DOMAINS = [
+    "kulture.ru",
+    "polka.academy",
+    "gorky.media",
+    "arzamas.academy",
+    "magazines.gorky.media",
+    "cyberleninka.ru",
+    "feb-web.ru",
+    "rvb.ru",
+    "ilibrary.ru",
+    "voplit.ru",
+    "nlobooks.ru",
+    "chtenie-21.ru",
+    "gramota.ru",
+]
 
 # ==================== LIMITI ====================
 MAX_CHARS_PROSE = 60000
@@ -107,9 +136,10 @@ def completer(text, state):
         completions = [c for c in COMMANDS if c.startswith(text)]
     else:
         cmd = words[0].lower()
-        if cmd in ['move', 'ingest', 'update', 'extract']:
+        if cmd in ['move', 'ingest', 'update']:
             completions = get_raw_files(text)
-        elif cmd in ['query', 'quote', 'compare', 'timeline', 'character', 'theme', 'translate', 'article', 'publish', 'complete']:
+        elif cmd in ['query', 'quote', 'compare', 'timeline', 'character', 'theme', 
+                     'translate', 'article', 'publish', 'complete', 'post']:
             completions = get_book_pages(text)
         else:
             completions = [c for c in COMMANDS if c.startswith(text)]
@@ -196,7 +226,7 @@ def detect_language(text):
     return "en"
 
 def detect_work_type(content):
-    """Rileva il tipo di opera secondo la classificazione russa"""
+    """Rileva il tipo di opera (solo suggerimento, poi l'utente decide)"""
     content_lower = content.lower()
     length = len(content)
     
@@ -214,11 +244,11 @@ def detect_work_type(content):
         if signal in content_lower:
             return "saggio"
     
-    # Classificazione per lunghezza (caratteri cirillici)
+    # Classificazione per lunghezza (solo suggerimento)
     if length < 30000:
         return "racconto"
     elif length < 150000:
-        return "racconto"
+        return "novella"  # ← ora suggerisce novella
     elif length < 800000:
         return "romanzo"
     else:
@@ -277,7 +307,11 @@ Ultimo aggiornamento: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 ## Opere per tipo
 
 """
-    by_type = {"racconto": [], "romanzo": [], "romanzo_epico": [], "saggio": [], "riassunto_completo": [], "other": []}
+    by_type = {
+        "racconto": [], "novella": [], "romanzo": [], 
+        "romanzo_epico": [], "saggio": [], "riassunto_completo": [],
+        "translation": [], "article": [], "post": [], "other": []
+    }
     for page in pages:
         content = page.read_text(encoding='utf-8')
         work_type = "other"
@@ -291,11 +325,15 @@ Ultimo aggiornamento: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
             by_type["other"].append(page)
     
     type_names = {
-        "racconto": "📖 Racconti (рассказ / повесть)",
+        "racconto": "📖 Racconti (рассказ) - < 30.000 car.",
+        "novella": "📗 Novelle (повесть) - 30.000-150.000 car.",
         "romanzo": "📚 Romanzi (роман) - capitoli",
         "romanzo_epico": "🏛️ Romanzi epici (роман-эпопея) - capitoli",
         "riassunto_completo": "📘 Riassunti completi",
         "saggio": "✍️ Saggi",
+        "translation": "🌐 Traduzioni",
+        "article": "📰 Articoli",
+        "post": "🐦 Post social (X/Telegram)",
         "other": "📄 Altro"
     }
     
@@ -449,21 +487,29 @@ def get_target_length(work_type, is_capitolo=False, is_complete=False):
     """Restituisce il target di caratteri in base al tipo e all'operazione"""
     if work_type == "racconto":
         return "5.000-8.000 caratteri"
+    elif work_type == "novella":
+        return "8.000-12.000 caratteri"
     elif work_type == "romanzo":
         if is_capitolo:
-            return "3.000-5.000 caratteri"
+            return "8.000-12.000 caratteri"
         elif is_complete:
             return "10.000-15.000 caratteri"
         else:
             return "10.000-15.000 caratteri"
     elif work_type == "romanzo_epico":
         if is_capitolo:
-            return "3.000-5.000 caratteri"
+            return "8.000-12.000 caratteri"
         elif is_complete:
             return "15.000-20.000 caratteri"
         else:
             return "15.000-20.000 caratteri"
-    else:  # saggio
+    elif work_type == "saggio":
+        return "4.000-6.000 caratteri"
+    elif work_type == "article":
+        return "8.000-25.000 caratteri"
+    elif work_type == "post":
+        return "X: 250-280, Telegram: 1.500-2.200 caratteri"
+    else:
         return "4.000-6.000 caratteri"
 
 def build_ingest_prompt(content, title, author, lang, work_type, is_capitolo=False, capitolo_num=None, highlighted_quotes=None):
@@ -486,10 +532,18 @@ def build_ingest_prompt(content, title, author, lang, work_type, is_capitolo=Fal
     
     target_length = get_target_length(work_type, is_capitolo, False)
     
+    # Istruzioni specifiche per tipo
+    type_instructions = ""
+    if work_type == "novella":
+        type_instructions = "\n⚠️ SPECIFICHE PER NOVELLA: trama articolata, 5-7 citazioni, 5-6 personaggi, 4-5 temi"
+    elif work_type == "racconto":
+        type_instructions = "\n⚠️ SPECIFICHE PER RACCONTO: compatto, 4-6 citazioni, 3-5 personaggi, 3-4 temi"
+    
     if is_capitolo:
         return f"""Sei un critico letterario. Crea un RIASSUNTO DEL CAPITOLO {capitolo_num} di quest'opera.
 
 {language_instruction}
+{type_instructions}
 
 ⚠️ LUNGHEZZA TARGET: {target_length}
 ⚠️ Descrivi solo gli eventi di QUESTO capitolo.
@@ -531,11 +585,12 @@ FORMATO:
         return f"""Sei un critico letterario. Crea un RIASSUNTO COMPLETO e DETTAGLIATO di quest'opera.
 
 {language_instruction}
+{type_instructions}
 
 ⚠️ LUNGHEZZA TARGET: {target_length}
 ⚠️ REQUISITI:
 1. Descrivi TUTTA la trama: inizio, sviluppo, climax, conclusione, morale
-2. Includi 4-6 citazioni importanti
+2. Includi 4-6 citazioni importanti (racconto) o 5-7 (novella)
 3. Crea link [[...]] per personaggi e autore
 4. NON troncare il finale
 
@@ -609,11 +664,6 @@ def build_complete_prompt(title, author, work_type, riassunti_capitoli):
     """Costruisce il prompt per il riassunto finale del romanzo"""
     target_length = get_target_length(work_type, is_capitolo=False, is_complete=True)
     
-    if work_type == "romanzo_epico":
-        lang_name = "russo"
-    else:
-        lang_name = "russo"
-    
     return f"""Sei un critico letterario. Crea un RIASSUNTO FINALE COMPLETO dell'intero romanzo.
 
 ⚠️ LUNGHEZZA TARGET: {target_length}
@@ -686,7 +736,7 @@ def build_article_prompt(riassunto, title, author, rating, target_lang="it"):
     """Costruisce il prompt per l'articolo Substack"""
     return f"""Sei un critico letterario che scrive per Substack. Trasforma il seguente RIASSUNTO in un ARTICOLO DI APPROFONDIMENTO coinvolgente.
 
-⚠️ LUNGHEZZA: 8.000-12.000 caratteri (per racconto) o 12.000-25.000 (per romanzo)
+⚠️ LUNGHEZZA: 8.000-12.000 caratteri (per racconto/novella) o 12.000-25.000 (per romanzo)
 ⚠️ LINGUA: {target_lang.upper()}
 ⚠️ TONO: Personale, critico, accessibile
 
@@ -798,34 +848,251 @@ FORMATO OBBLIGATORIO:
 
 ⚠️ Mantieni la lingua {target_lang}. Sii personale e coinvolgente."""
 
-# ==================== INTERACTIVE INGEST ====================
+def build_post_prompt(riassunto, title, author, rating, platform="x", target_lang="it"):
+    """Costruisce il prompt per il post X/Telegram"""
+    
+    if platform == "x":
+        target_length = "250-280 caratteri"
+        format_instruction = """FORMATO PER X (Twitter):
+📖 [Titolo] di [Autore]
+
+⭐ Voto: X/5
+
+[Citazione più significativa in 1-2 frasi]
+
+🎯 Tema principale: [1 frase]
+
+🔗 [[Opera]]
+#[hashtag1] #[hashtag2]"""
+    else:  # telegram
+        target_length = "1.500-2.200 caratteri"
+        format_instruction = """FORMATO PER Telegram:
+# [Titolo] di [Autore]
+
+> *[Citazione più significativa]*
+
+## 📌 In pillole
+- [Punto 1]
+- [Punto 2]
+- [Punto 3]
+
+## ⭐ Voto: X/5
+
+## 🔗 Approfondimento: [[Opera]]
+
+#letteratura #recensione"""
+    
+    return f"""Sei un critico letterario. Crea un POST per {platform.upper()} basato sul riassunto dell'opera.
+
+⚠️ LUNGHEZZA TARGET: {target_length}
+⚠️ LINGUA: {target_lang.upper()}
+⚠️ TONO: Conciso, incisivo, accattivante
+
+RIASSUNTO DELL'OPERA:
+{riassunto[:5000]}
+
+TITOLO: {title}
+AUTORE: {author}
+VOTO: {rating}/5
+
+{format_instruction}
+
+⚠️ Mantieni la lingua {target_lang}. Sii conciso e coinvolgente."""
+
+# ==================== RICERCA WEB ====================
+
+def duckduckgo_search(query: str, max_results: int = 5, site_restrict: str = None):
+    """Ricerca su DuckDuckGo - gratuito, nessuna API key"""
+    if not REQUESTS_AVAILABLE:
+        return []
+    
+    if site_restrict:
+        search_query = f"{query} site:{site_restrict}"
+    else:
+        search_query = query
+    
+    url = f"https://html.duckduckgo.com/html/?q={search_query.replace(' ', '%20')}"
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        results = []
+        for result in soup.find_all('a', class_='result__a')[:max_results]:
+            title = result.get_text(strip=True)
+            link = result.get('href', '')
+            
+            parent = result.find_parent()
+            snippet_elem = parent.find('a', class_='result__snippet') if parent else None
+            snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
+            
+            results.append({
+                'title': title,
+                'snippet': snippet,
+                'link': link,
+                'source': site_restrict or 'duckduckgo'
+            })
+        
+        return results
+    
+    except Exception as e:
+        print(f"   ⚠️ Errore ricerca: {e}")
+        return []
+
+def search_only_domains(query: str, domains: list, max_per_domain: int = 2, max_total: int = 10):
+    """Ricerca ESCLUSIVAMENTE nei domini specificati"""
+    all_results = []
+    
+    print(f"   🔍 Ricerca limitata a {len(domains)} domini...")
+    
+    for domain in domains:
+        print(f"      {domain}...", end=" ", flush=True)
+        results = duckduckgo_search(query, max_results=max_per_domain, site_restrict=domain)
+        filtered = [r for r in results if domain in r['link']]
+        all_results.extend(filtered)
+        print(f"✓ {len(filtered)} risultati")
+        time.sleep(0.3)
+    
+    unique_results = []
+    seen_links = set()
+    for r in all_results:
+        if r['link'] not in seen_links:
+            seen_links.add(r['link'])
+            unique_results.append(r)
+    
+    print(f"   ✅ Totale: {len(unique_results)} risultati (solo domini specificati)")
+    
+    return unique_results[:max_total]
+
+def web_search_command(query: str, mode: str = "hybrid"):
+    """Comando principale per ricerca web"""
+    
+    print(f"\n🌐 RICERCA WEB: {query}")
+    print(f"   Modalità: {mode}")
+    
+    if mode == "restricted":
+        results = search_only_domains(query, RUSSIAN_DOMAINS, max_per_domain=2, max_total=10)
+        source_note = "🔒 Risultati limitati ESCLUSIVAMENTE a domini russi."
+        
+    elif mode == "hybrid":
+        print("\n   🔒 FASE 1 - Domini russi...")
+        restricted_results = search_only_domains(query, RUSSIAN_DOMAINS, max_per_domain=2, max_total=5)
+        
+        if len(restricted_results) >= 3:
+            results = restricted_results
+            source_note = "🔒→🌐 Prima domini russi, risultati sufficienti."
+        else:
+            print(f"\n   🌐 FASE 2 - Solo {len(restricted_results)} risultati, espansione al web generale...")
+            web_results = duckduckgo_search(query, max_results=8)
+            
+            # Aggiungi solo quelli non già nei domini russi
+            new_results = []
+            for r in web_results:
+                is_covered = any(domain in r['link'] for domain in RUSSIAN_DOMAINS)
+                if not is_covered:
+                    r['source'] = 'web_generale'
+                    new_results.append(r)
+            
+            results = restricted_results + new_results
+            source_note = f"🔒→🌐 {len(restricted_results)} domini russi + {len(new_results)} web generale"
+        
+    else:  # "web"
+        results = duckduckgo_search(query, max_results=10)
+        source_note = "🌐 Ricerca su web generale (nessuna restrizione di dominio)."
+    
+    if not results:
+        print("   ❌ Nessun risultato trovato.")
+        return None, []
+    
+    print(f"\n   ✅ Trovati {len(results)} risultati")
+    print(f"   {source_note}")
+    
+    print("\n   📎 FONTI:")
+    for i, r in enumerate(results[:8], 1):
+        domain = r.get('source', 'unknown')
+        if domain == 'web_generale':
+            domain = '🌐 web'
+        print(f"      {i}. {r['title'][:60]}...")
+        print(f"         {r['link']} ({domain})")
+    
+    # Costruisci contesto per DeepSeek
+    context = "## RISULTATI RICERCA WEB\n\n"
+    for i, r in enumerate(results, 1):
+        context += f"### {i}. {r['title']}\n"
+        context += f"**Fonte:** {r['link']}\n"
+        context += f"**Contenuto:** {r['snippet']}\n\n"
+    
+    context += "---\n"
+    context += "Usa SOLO le informazioni sopra. Cita le fonti. Rispondi in ITALIANO.\n"
+    
+    prompt = f"""{context}
+
+Domanda: {query}
+
+Rispondi in modo completo e strutturato."""
+    
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.3,
+        max_tokens=4000
+    )
+    
+    answer = response.choices[0].message.content
+    
+    print("\n" + "="*80)
+    print("📚 RISPOSTA")
+    print("="*80)
+    print(answer)
+    print("\n" + "="*80)
+    print("📎 FONTI CONSULTATE:")
+    for i, r in enumerate(results, 1):
+        print(f"   {i}. {r['title'][:60]}")
+        print(f"      {r['link']}")
+    print("="*80)
+    
+    log_activity("WEB_SEARCH", f"Query: {query} | Mode: {mode} | Fonti: {len(results)}", None)
+    
+    return answer, results
+
+# ==================== MODALITÀ INTERATTIVA (10 DOMANDE) ====================
 
 def ask_work_type(auto_type):
-    print("\n❓ [1/14] Di che tipo di opera si tratta?")
+    print("\n❓ [1/10] Di che tipo di opera si tratta?")
     print(f"   Rilevato automaticamente: {auto_type}")
-    print("   1) Racconto (рассказ / повесть)")
-    print("   2) Romanzo (роман)")
-    print("   3) Romanzo epico (роман-эпопея)")
-    print("   4) Saggio (essay)")
-    choice = input("   → Scegli [1-4] o Invio: ").strip()
-    type_map = {"1": "racconto", "2": "romanzo", "3": "romanzo_epico", "4": "saggio"}
+    print("   1) Racconto (рассказ) - < 30.000 car.")
+    print("   2) Novella (повесть) - 30.000-150.000 car.")
+    print("   3) Romanzo (роман) - 150.000-800.000 car.")
+    print("   4) Romanzo epico (роман-эпопея) - > 800.000 car.")
+    print("   5) Saggio (essay)")
+    print("   6) Articolo (article) - Substack/blog")
+    print("   7) Post (post) - X/Twitter/Telegram")
+    choice = input("   → Scegli [1-7] o Invio: ").strip()
+    type_map = {
+        "1": "racconto", "2": "novella", "3": "romanzo",
+        "4": "romanzo_epico", "5": "saggio", "6": "article", "7": "post"
+    }
     return type_map.get(choice, auto_type)
 
 def ask_title(auto_title):
-    print("\n❓ [2/14] Qual è il titolo?")
+    print("\n❓ [2/10] Qual è il titolo?")
     print(f"   Rilevato: {auto_title}")
     title = input("   → Titolo (Invio per mantenere): ").strip()
     return title if title else auto_title
 
 def ask_author(auto_author):
-    print("\n❓ [3/14] Chi è l'autore?")
+    print("\n❓ [3/10] Chi è l'autore?")
     print(f"   Rilevato: {auto_author}")
     author = input("   → Autore (Invio per mantenere): ").strip()
     return author if author else auto_author
 
 def ask_language(auto_lang):
     lang_names = {"ru": "russo", "it": "italiano", "en": "inglese"}
-    print("\n❓ [4/14] In che lingua è scritta?")
+    print("\n❓ [4/10] In che lingua è scritta?")
     print(f"   Rilevato: {lang_names.get(auto_lang, auto_lang)}")
     print("   1) Russo (ru)")
     print("   2) Italiano (it)")
@@ -834,18 +1101,8 @@ def ask_language(auto_lang):
     lang_map = {"1": "ru", "2": "it", "3": "en"}
     return lang_map.get(choice, auto_lang)
 
-def ask_read_status():
-    print("\n❓ [5/14] Hai letto quest'opera?")
-    print("   1) Sì, completamente")
-    print("   2) Sì, solo in parte")
-    print("   3) No, ancora non letta")
-    print("   4) In corso di lettura")
-    choice = input("   → Scegli [1-4]: ").strip()
-    status_map = {"1": "completed", "2": "partial", "3": "unread", "4": "reading"}
-    return status_map.get(choice, "unknown")
-
 def ask_rating():
-    print("\n❓ [6/14] Da 1 a 5 stelle, che voto le dai?")
+    print("\n❓ [5/10] Da 1 a 5 stelle, che voto le dai?")
     print("   ★☆☆☆☆ (1) - Scarso")
     print("   ★★☆☆☆ (2) - Sufficiente")
     print("   ★★★☆☆ (3) - Buono")
@@ -857,7 +1114,7 @@ def ask_rating():
     return None
 
 def ask_personal_entities():
-    print("\n❓ [7/14] Quali entità (nomi propri) vuoi associare?")
+    print("\n❓ [6/10] Quali entità (nomi propri) vuoi associare?")
     print("   (personaggi, luoghi, autori, opere correlate)")
     print("   Esempio: Piskarev, Pirogov, Schiller, Gogol, Pietroburgo")
     entities = input("   → Entities (separate da virgola): ").strip()
@@ -866,16 +1123,16 @@ def ask_personal_entities():
     return []
 
 def ask_personal_tags():
-    print("\n❓ [8/14] Quali tag (categorie) vuoi associare?")
+    print("\n❓ [7/10] Quali tag (categorie) vuoi associare?")
     print("   (generi, keywords, stati)")
-    print("   Esempio: racconto, russian, classic, read_2026")
+    print("   Esempio: novella, russian, classic, read_2026")
     tags = input("   → Tags (separate da virgola): ").strip()
     if tags:
         return [t.strip().lower().replace(' ', '_') for t in tags.split(',')]
     return []
 
 def ask_manual_links():
-    print("\n❓ [9/14] Vuoi creare link manuali ad altre pagine del book?")
+    print("\n❓ [8/10] Vuoi creare link manuali ad altre pagine del book?")
     print("   (es: [[Gogol_Nikolaj]], [[Pietroburgo]])")
     links = input("   → Link (separati da virgola): ").strip()
     if links:
@@ -887,53 +1144,19 @@ def ask_manual_links():
     return []
 
 def ask_genre():
-    print("\n❓ [10/14] A quale genere letterario appartiene?")
+    print("\n❓ [9/10] A quale genere letterario appartiene?")
     print("   Esempi: realismo fantastico, commedia, tragedia, giallo")
     genre = input("   → Genere: ").strip()
     return genre if genre else None
 
 def ask_personal_notes():
-    print("\n❓ [11/14] Vuoi aggiungere una nota generale su quest'opera?")
+    print("\n❓ [10/10] Vuoi aggiungere una nota generale su quest'opera?")
     notes = input("   → Nota (Invio per saltare): ").strip()
     return notes if notes else None
 
-def ask_highlights():
-    print("\n❓ [12/14] Cosa ti ha colpito di più?")
-    highlights = input("   → Risposta: ").strip()
-    return highlights if highlights else None
-
-def ask_manual_quotes(existing_quotes):
-    print(f"\n❓ [13/14] Nel file raw hai usato >> ... << per evidenziare {len(existing_quotes)} citazioni.")
-    print("   Vuoi aggiungerne altre manualmente?")
-    add = input("   → s/n: ").strip().lower()
-    manual_quotes = []
-    if add == 's':
-        print("   Inserisci le citazioni (riga vuota per terminare):")
-        print("   Formato: >> Testo della citazione << — Personaggio")
-        while True:
-            quote = input("   >> ").strip()
-            if not quote:
-                break
-            if quote.endswith('<<'):
-                quote = quote[:-2].strip()
-            manual_quotes.append(quote)
-    return manual_quotes
-
-def ask_publish_article():
-    print("\n❓ [14/14] Vuoi generare un articolo/blog post da questo riassunto?")
-    print("   1) Sì, formato Markdown")
-    print("   2) Sì, formato HTML")
-    print("   3) No")
-    choice = input("   → Scegli [1-3]: ").strip()
-    if choice == "1":
-        return "markdown"
-    elif choice == "2":
-        return "html"
-    return None
-
 def interactive_metadata(filename, auto_type, auto_title, auto_author, auto_lang, existing_quotes):
     print("\n" + "="*60)
-    print("📖 MODALITÀ INTERATTIVA - Inserisci i metadati")
+    print("📖 MODALITÀ INTERATTIVA - Inserisci i metadati (10 domande)")
     print("   (IGNORO il frontmatter del file raw, uso le tue scelte)")
     print("="*60)
     
@@ -941,18 +1164,14 @@ def interactive_metadata(filename, auto_type, auto_title, auto_author, auto_lang
     title = ask_title(auto_title)
     author = ask_author(auto_author)
     language = ask_language(auto_lang)
-    read_status = ask_read_status()
     rating = ask_rating()
     personal_entities = ask_personal_entities()
     personal_tags = ask_personal_tags()
     manual_links = ask_manual_links()
     genre = ask_genre()
     personal_notes = ask_personal_notes()
-    highlights = ask_highlights()
-    manual_quotes = ask_manual_quotes(existing_quotes)
-    publish_format = ask_publish_article()
     
-    # Per i romanzi, conferma titolo e autore (obbligatori per collegare i capitoli)
+    # Per i romanzi, conferma titolo e autore
     if work_type in ["romanzo", "romanzo_epico"]:
         print("\n   ⚠️ Per i romanzi, titolo e autore verranno usati per")
         print("      collegare automaticamente tutti i capitoli.")
@@ -969,16 +1188,12 @@ def interactive_metadata(filename, auto_type, auto_title, auto_author, auto_lang
     print(f"   Titolo: {title}")
     print(f"   Autore: {author}")
     print(f"   Lingua: {language}")
-    print(f"   Stato lettura: {read_status}")
     print(f"   Voto: {rating if rating else 'non specificato'}")
     print(f"   Entities: {personal_entities if personal_entities else 'nessuna'}")
     print(f"   Tags: {personal_tags if personal_tags else 'nessuno'}")
     print(f"   Link manuali: {manual_links if manual_links else 'nessuno'}")
     print(f"   Genere: {genre if genre else 'non specificato'}")
     print(f"   Note: {personal_notes if personal_notes else 'nessuna'}")
-    print(f"   Highlights: {highlights if highlights else 'nessuno'}")
-    print(f"   Citazioni manuali: {len(manual_quotes)}")
-    print(f"   Pubblicazione: {publish_format if publish_format else 'no'}")
     print("="*60)
     
     confirm = input("\n✅ Procedi con questi dati? (s/n): ").strip().lower()
@@ -991,16 +1206,12 @@ def interactive_metadata(filename, auto_type, auto_title, auto_author, auto_lang
         "title": title,
         "author": author,
         "language": language,
-        "read_status": read_status,
         "rating": rating,
         "personal_entities": personal_entities,
         "personal_tags": personal_tags,
         "manual_links": manual_links,
         "genre": genre,
-        "personal_notes": personal_notes,
-        "highlights": highlights,
-        "manual_quotes": manual_quotes,
-        "publish_format": publish_format
+        "personal_notes": personal_notes
     }
 
 # ==================== INGEST ====================
@@ -1033,7 +1244,7 @@ def ingest(filename, force=False, interactive=False, capitolo_num=None, opera_ti
     if highlighted_quotes:
         print(f"   📌 Estratte {len(highlighted_quotes)} citazioni evidenziate (>> ... <<)")
     
-    # Rilevazione automatica (solo se NON in modalità interattiva)
+    # Rilevazione automatica (solo suggerimento)
     auto_type = detect_work_type(clean_content)
     auto_lang = detect_language(clean_content)
     auto_author = detect_author_from_content(clean_content, auto_lang)
@@ -1059,9 +1270,6 @@ def ingest(filename, force=False, interactive=False, capitolo_num=None, opera_ti
         author = metadata["author"]
         lang = metadata["language"]
         
-        if metadata["manual_quotes"]:
-            highlighted_quotes.extend(metadata["manual_quotes"])
-        
         auto_entities = re.findall(r'\[\[([^\]]+)\]\]', clean_content[:1000])
         all_entities = list(set(auto_entities + metadata["personal_entities"]))[:8]
         
@@ -1070,12 +1278,9 @@ def ingest(filename, force=False, interactive=False, capitolo_num=None, opera_ti
         all_tags = list(set(auto_tags + metadata["personal_tags"]))[:8]
         
         extra_metadata = {
-            "read_status": metadata["read_status"],
             "rating": metadata["rating"],
             "genre": metadata["genre"],
             "personal_notes": metadata["personal_notes"],
-            "highlights": metadata["highlights"],
-            "publish_format": metadata["publish_format"],
             "manual_links": metadata["manual_links"]
         }
     else:
@@ -1085,7 +1290,7 @@ def ingest(filename, force=False, interactive=False, capitolo_num=None, opera_ti
         all_tags.append("russian" if lang == "ru" else "italian" if lang == "it" else "english")
         all_tags = list(set(all_tags))[:6]
     
-    # Se è un romanzo e abbiamo un capitolo, usa il nome specifico
+    # Se è un romanzo e abbiamo un capitolo
     if work_type in ["romanzo", "romanzo_epico"] and capitolo_num:
         safe_title = normalize_spaces(opera_title or title)
         page_name = f"{safe_title}_Capitolo_{capitolo_num}_{work_type}"
@@ -1109,14 +1314,11 @@ def ingest(filename, force=False, interactive=False, capitolo_num=None, opera_ti
         model="deepseek-chat",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.3,
-        max_tokens=4000
+        max_tokens=5000
     )
     
     summary_content = response.choices[0].message.content
     summary_content = normalize_links(summary_content)
-    
-    if extra_metadata.get("highlights"):
-        summary_content = f"> 💡 **Cosa mi ha colpito:** {extra_metadata['highlights']}\n\n---\n\n{summary_content}"
     
     if extra_metadata.get("manual_links"):
         links_section = "\n\n## 🔗 Collegamenti\n"
@@ -1151,16 +1353,12 @@ entities: {entities_str}
 status: "completato"
 """
     
-    if extra_metadata.get("read_status"):
-        frontmatter += f'read_status: "{extra_metadata["read_status"]}"\n'
     if extra_metadata.get("rating"):
         frontmatter += f'rating: {extra_metadata["rating"]}\n'
     if extra_metadata.get("genre"):
         frontmatter += f'genre: "{extra_metadata["genre"]}"\n'
     if extra_metadata.get("personal_notes"):
         frontmatter += f'personal_notes: "{extra_metadata["personal_notes"]}"\n'
-    if extra_metadata.get("publish_format"):
-        frontmatter += f'publish_format: "{extra_metadata["publish_format"]}"\n'
     if capitolo_num:
         frontmatter += f'capitolo: {capitolo_num}\n'
         frontmatter += f'opera_title: "{opera_title or title}"\n'
@@ -1170,7 +1368,6 @@ status: "completato"
     
     mark_file_processed(filename, page_name, "ingest")
     
-    # Registra il capitolo se è un romanzo
     if work_type in ["romanzo", "romanzo_epico"] and capitolo_num:
         register_capitolo(opera_title or title, author, capitolo_num, filename, page_name, force)
     
@@ -1182,23 +1379,6 @@ status: "completato"
         print(f"   💬 Citazioni evidenziate: {len(highlighted_quotes)}")
     if extra_metadata.get("personal_notes"):
         print(f"   📝 Note personali: {len(extra_metadata['personal_notes'])} caratteri")
-    
-    # Genera articolo se richiesto
-    if extra_metadata.get("publish_format"):
-        article_name = f"{datetime.now().date()}_{safe_title}"
-        if extra_metadata["publish_format"] == "markdown":
-            (ARTICLES / f"{article_name}.md").write_text(f"# {title}\n\n{summary_content}", encoding='utf-8')
-            print(f"   📄 Articolo generato: articles/{article_name}.md")
-        elif extra_metadata["publish_format"] == "html":
-            html = f"""<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><title>{title}</title>
-<style>body{{font-family:Arial;max-width:800px;margin:0 auto;padding:20px;line-height:1.6;}}</style>
-</head>
-<body>{summary_content}</body>
-</html>"""
-            (ARTICLES / f"{article_name}.html").write_text(html, encoding='utf-8')
-            print(f"   📄 Articolo generato: articles/{article_name}.html")
     
     log_activity("INGEST", f"Creato riassunto da {filename} (tipo: {work_type})", filename)
     update_index()
@@ -1231,7 +1411,6 @@ def update_existing(filename, force=False, capitolo_num=None, opera_title=None, 
     if quotes:
         print(f"   📌 Estratte {len(quotes)} citazioni evidenziate (>> ... <<)")
     
-    # Se abbiamo capitolo, titolo e autore, cerca l'opera esistente
     if capitolo_num and opera_title and opera_author:
         capitoli_data = get_opera_capitoli(opera_title, opera_author)
         
@@ -1240,7 +1419,6 @@ def update_existing(filename, force=False, capitolo_num=None, opera_title=None, 
             print(f"   Esegui prima 'ingest' del capitolo 1 con --capitolo 1")
             return
         
-        # Trova il primo capitolo per ottenere il nome della pagina
         first_num = min(capitoli_data.keys(), key=int)
         first_info = capitoli_data[first_num]
         target_name = first_info["page"]
@@ -1248,16 +1426,13 @@ def update_existing(filename, force=False, capitolo_num=None, opera_title=None, 
         print(f"   🔗 Opera trovata: '{opera_title}' di {opera_author}")
         print(f"   📖 Collegamento al capitolo {first_num}: [[{target_name}]]")
         
-        # Registra il nuovo capitolo
         register_capitolo(opera_title, opera_author, capitolo_num, filename, f"{normalize_spaces(opera_title)}_Capitolo_{capitolo_num}_romanzo", force)
         
-        # Crea il riassunto del capitolo
         ingest(filename, force, interactive=False, capitolo_num=capitolo_num, opera_title=opera_title, opera_author=opera_author)
         
         print(f"   ✅ Capitolo {capitolo_num} aggiunto all'opera '{opera_title}'")
         return
     
-    # Fallback: modalità normale
     pages = list(BOOK_PAGES.glob("*.md"))
     if not pages:
         print("   ⚠️ Nessuna pagina nel book. Esegui prima 'ingest'")
@@ -1359,7 +1534,6 @@ def complete_summary(opera_title, opera_author=None):
     print(f"\n📚 Generazione riassunto completo per: {opera_title}")
     print(f"   Capitoli trovati: {len(capitoli_data)}")
     
-    # Raccogli i riassunti dei capitoli in ordine
     riassunti_capitoli = []
     work_type = None
     author = opera_author
@@ -1374,7 +1548,6 @@ def complete_summary(opera_title, opera_author=None):
                 if len(parts) >= 3:
                     content = parts[2].strip()
             
-            # Estrai il tipo dal frontmatter
             if not work_type:
                 page_content = page_path.read_text(encoding='utf-8')
                 if page_content.startswith('---'):
@@ -1385,7 +1558,7 @@ def complete_summary(opera_title, opera_author=None):
                                 work_type = line.split(':', 1)[1].strip().strip('"')
                                 break
             
-            riassunti_capitoli.append(f"## Capitolo {num}\n{content[:4000]}")
+            riassunti_capitoli.append(f"## Capitolo {num}\n{content[:8000]}")
             print(f"   ✅ Letto capitolo {num}")
     
     if not riassunti_capitoli:
@@ -1438,7 +1611,90 @@ status: "completato"
     
     return page_name
 
-# ==================== TRANSLATE ====================
+# ==================== POST ====================
+
+def generate_post(page_name, platform="x", target_lang="it"):
+    """Genera un post per X (Twitter) o Telegram"""
+    page_path = BOOK_PAGES / f"{page_name}.md"
+    if not page_path.exists():
+        print(f"❌ Pagina {page_name} non trovata")
+        return None
+    
+    print(f"\n🐦 GENERA POST PER {platform.upper()}: {page_name}")
+    print(f"   Lingua target: {target_lang}")
+    
+    content = page_path.read_text(encoding='utf-8')
+    body = content
+    title = page_name
+    author = "Sconosciuto"
+    rating = "N/A"
+    
+    if content.startswith('---'):
+        parts = content.split('---', 2)
+        if len(parts) >= 3:
+            for line in parts[1].split('\n'):
+                if line.startswith('title:'):
+                    title = line.split(':', 1)[1].strip().strip('"')
+                if line.startswith('author:'):
+                    author = line.split(':', 1)[1].strip().strip('"')
+                if line.startswith('rating:'):
+                    rating = line.split(':', 1)[1].strip()
+            body = parts[2].strip()
+    
+    current_lang = detect_language(body)
+    if current_lang != target_lang:
+        print(f"   🌐 Traduzione da {current_lang} a {target_lang}...")
+        translate_prompt = f"""Traduci il seguente testo da {current_lang} a {target_lang}.
+        Mantieni la struttura markdown.
+        
+        TESTO:
+        {body[:5000]}"""
+        
+        response = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": translate_prompt}],
+            temperature=0.3
+        )
+        body = response.choices[0].message.content
+    
+    prompt = build_post_prompt(body, title, author, rating, platform, target_lang)
+    
+    response = client.chat.completions.create(
+        model="deepseek-chat",
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.5,
+        max_tokens=800
+    )
+    
+    post_content = response.choices[0].message.content
+    
+    safe_title = normalize_spaces(title)
+    post_name = f"{datetime.now().date()}_{safe_title}_post_{platform}"
+    post_path = ARTICLES / f"{post_name}.md"
+    
+    frontmatter = f"""---
+title: "{title} - Post per {platform.upper()}"
+type: post
+platform: {platform}
+created: {datetime.now().date()}
+source_page: {page_name}
+language: {target_lang}
+---
+
+"""
+    post_path.write_text(frontmatter + post_content, encoding='utf-8')
+    
+    print(f"\n   ✅ Post generato: {post_path}")
+    if platform == "x":
+        print(f"   📝 {len(post_content)} caratteri (target: 250-280)")
+    else:
+        print(f"   📝 {len(post_content)} caratteri (target: 1.500-2.200)")
+    
+    log_activity("POST", f"Generato post per {page_name} su {platform}", None)
+    
+    return post_path
+
+# ==================== TRADUZIONE ====================
 
 def translate_page(page_name, target_lang="it"):
     page_path = BOOK_PAGES / f"{page_name}.md"
@@ -1503,7 +1759,7 @@ status: "tradotto"
     log_activity("TRANSLATE", f"Tradotta [[{page_name}]] in {target_lang}", None)
     update_index()
 
-# ==================== ARTICLE ====================
+# ==================== ARTICOLO ====================
 
 def generate_article(page_name, format="substack", target_lang="it"):
     page_path = BOOK_PAGES / f"{page_name}.md"
@@ -1533,7 +1789,6 @@ def generate_article(page_name, format="substack", target_lang="it"):
                     rating = line.split(':', 1)[1].strip()
             body = parts[2].strip()
     
-    # Se necessario, traduci il corpo in italiano
     current_lang = detect_language(body)
     if current_lang != target_lang:
         print(f"   🌐 Traduzione da {current_lang} a {target_lang}...")
@@ -1591,7 +1846,6 @@ def publish(page_name, target_lang="it", platform="substack"):
     print(f"\n📝 PUBBLICA SU {platform.upper()}: {page_name}")
     print(f"   Lingua target: {target_lang}")
     
-    # Verifica se esiste già una traduzione
     translated_name = f"{page_name}_{target_lang}"
     translated_path = BOOK_PAGES / f"{translated_name}.md"
     
@@ -1599,7 +1853,6 @@ def publish(page_name, target_lang="it", platform="substack"):
         print(f"   🌐 Traduzione da {detect_language(page_name)} a {target_lang}...")
         translate_page(page_name, target_lang)
     
-    # Genera articolo
     article_path = generate_article(translated_name, platform, target_lang)
     
     print(f"\n   ✅ Pubblicazione completata!")
@@ -1608,108 +1861,7 @@ def publish(page_name, target_lang="it", platform="substack"):
     
     return article_path
 
-# ==================== ALTRI COMANDI ====================
-
-def extract(filename, force=False):
-    # ... (codice esistente invariato)
-    src = RAW / filename
-    if not src.exists():
-        print(f"❌ {filename} non trovato in raw/")
-        return
-
-    if not force and is_file_processed(filename, "extract"):
-        print(f"\n⏭️ SKIP EXTRACT: {filename} già elaborato")
-        print("   Usa 'extract --force' per forzare")
-        return
-    elif force:
-        print("   ⚡ Forzatura: extract")
-
-    print(f"\n📌 EXTRACT: {filename}")
-    content = src.read_text(encoding='utf-8')
-    if content.startswith('---'):
-        parts = content.split('---', 2)
-        if len(parts) >= 3:
-            content = parts[2].strip()
-    
-    quotes, clean_content = extract_highlighted_quotes(content)
-    if quotes:
-        print(f"   📌 Estratte {len(quotes)} citazioni evidenziate")
-    
-    title = filename.replace('.md', '')
-    for line in clean_content.split('\n'):
-        if line.startswith('# '):
-            title = line[2:].strip()
-            break
-    
-    work_type = detect_work_type(clean_content)
-    lang = detect_language(clean_content)
-    
-    quotes_text = ""
-    if quotes:
-        quotes_text = "\n\nCitazioni evidenziate:\n" + "\n".join([f"- {q}" for q in quotes])
-    
-    prompt = f"""Estrai SOLO l'essenziale da quest'opera {work_type}.
-
-TESTO:
-{clean_content[:MAX_CHARS_PROSE//2]}
-{quotes_text}
-
-CREA:
-
-# {title} - Punti chiave
-
-## TL;DR (massimo 3 righe)
-
-## Personaggi principali (massimo 5)
-
-## Trama in 5 punti
-1.
-2.
-3.
-4.
-5.
-
-## Citazione più significativa
-
-Sii ultra-conciso. Nessuna analisi."""
-    
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    
-    wiki = response.choices[0].message.content
-    wiki = normalize_links(wiki)
-    
-    safe_title = normalize_spaces(title)[:40]
-    page_name = f"{safe_title}_essenziale"
-    page_path = BOOK_PAGES / f"{page_name}.md"
-    counter = 1
-    while page_path.exists():
-        page_name = f"{safe_title}_essenziale_{counter}"
-        page_path = BOOK_PAGES / f"{page_name}.md"
-        counter += 1
-    
-    frontmatter = f"""---
-title: "{title} - Punti chiave"
-type: essential
-language: {lang}
-created: {datetime.now().date()}
-source: [{filename}]
-category: Essenziali
-tags: ["riassunto", "essenziale"]
-entities: []
-status: "essenziale"
----
-
-"""
-    page_path.write_text(frontmatter + wiki, encoding='utf-8')
-    mark_file_processed(filename, page_name, "extract")
-    print(f"   ✅ Versione essenziale: book/pages/{page_name}.md")
-    log_activity("EXTRACT", f"Creato essenziale da {filename}", filename)
-    update_index()
-    return page_name
+# ==================== QUERY E ANALISI ====================
 
 def query(question):
     print(f"\n❓ {question}")
@@ -1749,24 +1901,6 @@ Risposta:"""
     print(resp.choices[0].message.content)
     print("="*60)
     log_activity("QUERY", f"Domanda: {question[:100]}", None)
-
-def deep_search(question):
-    print(f"\n🌐 RICERCA WEB: {question}")
-    prompt = f"""Cerca informazioni aggiornate in rete su questo argomento letterario.
-
-DOMANDA: {question}
-
-Restituisci risposta strutturata con fonti."""
-    response = client.chat.completions.create(
-        model="deepseek-chat",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3
-    )
-    print("\n" + "="*60)
-    print("🌐 RISULTATI:")
-    print(response.choices[0].message.content)
-    print("="*60)
-    log_activity("DEEP_SEARCH", f"Ricerca web: {question[:100]}", None)
 
 def quote(page_name, character=None):
     page_path = BOOK_PAGES / f"{page_name}.md"
@@ -1944,6 +2078,8 @@ Per ogni tema:
     print(response.choices[0].message.content)
     print("="*60)
 
+# ==================== LINT E STATUS ====================
+
 def lint():
     print("\n🔍 LINT: analisi book...")
     pages = list(BOOK_PAGES.glob("*.md"))
@@ -2040,16 +2176,21 @@ def move_to_raw(filename):
 def main():
     print("\n" + "="*70)
     print("📚 LLM Book Manager")
-    print("Classificazione russa: рассказ + повесть → racconto, роман → romanzo")
+    print("Classificazione: racconto (<30k), novella (30k-150k), romanzo (150k-800k), epico (>800k)")
     print("Convenzioni: underscore per link, entities, tags")
     print("Marker citazioni: >> ... << (multi-riga supportato)")
     print("="*70)
     
     print("\n📖 COMANDI PRINCIPALI:")
-    print("  ingest <file> -i                     → crea riassunto (interattivo)")
+    print("  ingest <file> -i                     → crea riassunto (interattivo, 10 domande)")
     print("  ingest <file> -i --capitolo N --opera \"Titolo\" --autore \"Nome\"")
     print("  update <file> --capitolo N --opera \"Titolo\" --autore \"Nome\"")
     print("  complete <opera> --autore \"Nome\"    → riassunto finale romanzo")
+    print("  web \"query\"                          → ricerca web ibrida (domini russi → web)")
+    print("  web-ru \"query\"                       → solo domini russi")
+    print("  web-only \"query\"                     → solo web generale")
+    print("  post <page> --platform x             → genera post per X (Twitter)")
+    print("  post <page> --platform telegram      → genera post per Telegram")
     print("  translate <page> <lang>              → traduce una pagina")
     print("  article <page> --format substack    → genera articolo Substack")
     print("  publish <page> --target it --platform substack")
@@ -2127,14 +2268,27 @@ def main():
                     if part == '--autore' and i + 1 < len(parts):
                         opera_author = parts[i + 1]
                 complete_summary(opera_title, opera_author)
-            elif c == 'extract' and len(parts) > 1:
-                filename = parts[1]
-                force = '--force' in parts
-                extract(filename, force)
             elif c == 'query' and len(parts) > 1:
                 query(' '.join(parts[1:]))
-            elif c == 'deep' and len(parts) > 1:
-                deep_search(' '.join(parts[1:]))
+            elif c == 'web' and len(parts) > 1:
+                query = ' '.join(parts[1:])
+                web_search_command(query, mode="hybrid")
+            elif c == 'web-ru' and len(parts) > 1:
+                query = ' '.join(parts[1:])
+                web_search_command(query, mode="restricted")
+            elif c == 'web-only' and len(parts) > 1:
+                query = ' '.join(parts[1:])
+                web_search_command(query, mode="web")
+            elif c == 'post' and len(parts) > 1:
+                page_name = parts[1]
+                platform = "x"
+                target_lang = "it"
+                for i, part in enumerate(parts):
+                    if part == '--platform' and i + 1 < len(parts):
+                        platform = parts[i + 1]
+                    if part == '--lang' and i + 1 < len(parts):
+                        target_lang = parts[i + 1]
+                generate_post(page_name, platform, target_lang)
             elif c == 'quote' and len(parts) > 1:
                 char = None if len(parts) <= 2 else ' '.join(parts[2:])
                 quote(parts[1], char)
